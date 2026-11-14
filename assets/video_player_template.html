@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob: data:; img-src 'self' data:;">
+  <title>Architecture Walkthrough — Cinema Chapter Player</title>
+  <style>
+    :root, [data-theme="dark"] {
+      --bg-page: #2E3440;
+      --bg-panel: #3B4252;
+      --bg-elevated: #434C5E;
+      --border-subtle: #4C566A;
+      --text-primary: #ECEFF4;
+      --text-secondary: #D8DEE9;
+      --text-muted: #AEB8C9;
+      --accent-cyan: #88C0D0;
+      --accent-blue: #5E81AC;
+      --accent-teal: #8FBCBB;
+      --status-ok: #A3BE8C;
+      --status-warn: #EBCB8B;
+      --status-err: #BF616A;
+      --shadow-panel: 0 18px 42px rgba(15, 19, 26, 0.42);
+    }
+
+    [data-theme="light"] {
+      --bg-page: #ECEFF4;
+      --bg-panel: #FFFFFF;
+      --bg-elevated: #E5E9F0;
+      --border-subtle: #CBD3E1;
+      --text-primary: #2E3440;
+      --text-secondary: #3B4252;
+      --text-muted: #4C566A;
+      --accent-cyan: #2C7A94;
+      --accent-blue: #3B5F8A;
+      --accent-teal: #3B827E;
+      --status-ok: #4E7A38;
+      --status-warn: #9B711C;
+      --status-err: #A13A44;
+      --shadow-panel: 0 14px 32px rgba(46, 52, 64, 0.10);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-page);
+      color: var(--text-primary);
+      line-height: 1.5;
+    }
+
+    .shell {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    .topbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .kicker {
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--accent-cyan);
+    }
+
+    h1 {
+      margin: 2px 0 0;
+      font-size: 1.45rem;
+      font-weight: 700;
+      letter-spacing: -0.015em;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn, .select-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-panel);
+      color: var(--text-primary);
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .btn:hover, .select-pill:hover {
+      border-color: var(--accent-cyan);
+      background: var(--bg-elevated);
+    }
+
+    .btn.is-active {
+      border-color: var(--accent-cyan);
+      background: var(--accent-blue);
+      color: #ECEFF4;
+    }
+
+    .icon {
+      width: 15px;
+      height: 15px;
+      fill: currentColor;
+      flex-shrink: 0;
+    }
+
+    .chapter-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .cinema-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: var(--shadow-panel);
+    }
+
+    .video-frame {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #1B1F27;
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      height: 100%;
+      outline: none;
+    }
+
+    .meta-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 20px 12px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .chapter-title {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .chapter-summary {
+      margin: 4px 0 0;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+    }
+
+    .markers-section {
+      padding: 4px 20px 20px;
+    }
+
+    .markers-label {
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .marker-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .marker-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 0.15s ease, transform 0.12s ease;
+    }
+
+    .marker-pill:hover {
+      border-color: var(--accent-cyan);
+      transform: translateY(-1px);
+    }
+
+    .marker-pill.is-current {
+      border-color: var(--accent-cyan);
+      box-shadow: inset 0 0 0 1px var(--accent-cyan);
+    }
+
+    .marker-time {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.76rem;
+      font-weight: 700;
+      color: var(--accent-cyan);
+    }
+
+    .kbd-hint {
+      margin-top: 14px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="ic-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
+    <symbol id="ic-globe" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10.01 10.01 0 0 0 12 2zm6.93 9h-3.02a15.6 15.6 0 0 0-1.18-5.01A8.03 8.03 0 0 1 18.93 11zM12 4.04c.83 1.2 1.52 3.24 1.88 6.96h-3.76c.36-3.72 1.05-5.76 1.88-6.96zM4.26 13h3.02c.2 1.83.63 3.55 1.18 5.01A8.03 8.03 0 0 1 4.26 13zm3.02-2H4.26a8.03 8.03 0 0 1 4.2-5.01A15.6 15.6 0 0 0 7.28 11zM12 19.96c-.83-1.2-1.52-3.24-1.88-6.96h3.76c-.36 3.72-1.05 5.76-1.88 6.96zm2.73-1.95A15.6 15.6 0 0 0 15.91 13h3.02a8.03 8.03 0 0 1-4.2 5.01z"/></symbol>
+    <symbol id="ic-contrast" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 9 9 0 0 0-9-9zm0 16V5a7 7 0 0 1 0 14z"/></symbol>
+  </svg>
+
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="kicker">1080p60 System Walkthrough</div>
+        <h1 id="pageTitle">API Gateway, Token-Bucket Rate Limiter &amp; Read-Through Cache</h1>
+      </div>
+
+      <div class="toolbar" role="toolbar" aria-label="Playback preferences">
+        <div id="langGroup" style="display:inline-flex;gap:6px" role="group" aria-label="Audio track language">
+          <button type="button" class="btn is-active" data-lang="en">
+            <svg class="icon" aria-hidden="true"><use href="#ic-globe"></use></svg>
+            <span>EN</span>
+          </button>
+          <button type="button" class="btn" data-lang="alt">
+            <svg class="icon" aria-hidden="true"><use href="#ic-globe"></use></svg>
+            <span>ALT</span>
+          </button>
+        </div>
+
+        <label for="speedSelect" class="select-pill">
+          <span>Speed</span>
+          <select id="speedSelect" style="background:transparent;border:0;color:inherit;font:inherit;cursor:pointer">
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1.0x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2.0x</option>
+          </select>
+        </label>
+
+        <button type="button" class="btn" id="themeBtn" aria-label="Toggle color theme">
+          <svg class="icon" aria-hidden="true"><use href="#ic-contrast"></use></svg>
+          <span id="themeLabel">Light</span>
+        </button>
+      </div>
+    </header>
+
+    <nav class="chapter-tabs" id="chapterTabs" aria-label="Walkthrough chapters"></nav>
+
+    <section class="cinema-card" aria-label="Video player">
+      <div class="video-frame">
+        <video id="explainerVideo" controls preload="metadata" playsinline>
+          <source id="videoSource" src="master_en.mp4" type="video/mp4">
+          <track id="captionTrack" kind="subtitles" srclang="en" label="Subtitles" src="master_en.vtt" default>
+        </video>
+      </div>
+
+      <div class="meta-bar">
+        <div>
+          <h2 class="chapter-title" id="chapterTitle">Master Walkthrough</h2>
+          <p class="chapter-summary" id="chapterSummary">End-to-end request lifecycle across rate limiting, cache lookup, and primary database replication.</p>
+        </div>
+      </div>
+
+      <div class="markers-section">
+        <div class="markers-label">Beat Markers</div>
+        <div class="marker-pills" id="markerPills"></div>
+        <div class="kbd-hint">Shortcuts: Space/K play-pause, J/L seek 5s, M mute, F fullscreen.</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const PLAYER_CONFIG = {
+      languages: {
+        en: { label: "English", srclang: "en" },
+        alt: { label: "Secondary", srclang: "es" }
+      },
+      chapters: [
+        {
+          id: "master",
+          tab: "Master Reel",
+          title: "Full Three-Act Architecture Walkthrough",
+          summary: "Complete narrated sequence covering steady-state caching, burst rate limiting, and failover quorum.",
+          sources: {
+            en: { mp4: "master_en.mp4", vtt: "master_en.vtt" },
+            alt: { mp4: "master_alt.mp4", vtt: "master_alt.vtt" }
+          },
+          markers: [
+            { sec: 0, label: "Client Ingress & TLS Termination" },
+            { sec: 14, label: "Token-Bucket Quota Check" },
+            { sec: 31, label: "Read-Through Cache Miss & Fill" },
+            { sec: 49, label: "Burst Rejection (HTTP 429)" },
+            { sec: 66, label: "Write-Ahead Log Quorum Recovery" }
+          ]
+        },
+        {
+          id: "act1",
+          tab: "Act 1: Ingress & Quota",
+          title: "Act 1 — Request Admission & Token-Bucket Rate Limiter",
+          summary: "Atomic token decrement guarantees burst absorption without starving downstream storage.",
+          sources: {
+            en: { mp4: "act1_en.mp4", vtt: "act1_en.vtt" },
+            alt: { mp4: "act1_alt.mp4", vtt: "act1_alt.vtt" }
+          },
+          markers: [
+            { sec: 0, label: "Gateway Route Match" },
+            { sec: 11, label: "Atomic Token Refill & Decrement" }
+          ]
+        },
+        {
+          id: "act2",
+          tab: "Act 2: Cache & Storage",
+          title: "Act 2 — Read-Through Cache & Primary DB Hydration",
+          summary: "Single-flight lock prevents cache stampedes while populating the TTL entry.",
+          sources: {
+            en: { mp4: "act2_en.mp4", vtt: "act2_en.vtt" },
+            alt: { mp4: "act2_alt.mp4", vtt: "act2_alt.vtt" }
+          },
+          markers: [
+            { sec: 0, label: "Cache Lookup & Single-Flight Lock" },
+            { sec: 16, label: "Primary DB Query & TTL Writeback" }
+          ]
+        }
+      ]
+    };
+
+    const video = document.getElementById("explainerVideo");
+    const videoSource = document.getElementById("videoSource");
+    const captionTrack = document.getElementById("captionTrack");
+    const chapterTabs = document.getElementById("chapterTabs");
+    const chapterTitle = document.getElementById("chapterTitle");
+    const chapterSummary = document.getElementById("chapterSummary");
+    const markerPills = document.getElementById("markerPills");
+    const speedSelect = document.getElementById("speedSelect");
+    const themeBtn = document.getElementById("themeBtn");
+    const themeLabel = document.getElementById("themeLabel");
+    const langButtons = Array.from(document.querySelectorAll("[data-lang]"));
+
+    let activeChapterIndex = 0;
+    let activeLang = "en";
+
+    function fmtTime(sec) {
+      const s = Math.max(0, Math.floor(sec));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return String(m).padStart(2, "0") + ":" + String(r).padStart(2, "0");
+    }
+
+    function loadMedia(preservePosition) {
+      const chapter = PLAYER_CONFIG.chapters[activeChapterIndex];
+      const media = chapter.sources[activeLang] || chapter.sources.en;
+      const resumeTime = preservePosition ? video.currentTime : 0;
+      const wasPlaying = !video.paused && !video.ended;
+
+      chapterTitle.textContent = chapter.title;
+      chapterSummary.textContent = chapter.summary;
+
+      videoSource.src = media.mp4;
+      captionTrack.src = media.vtt;
+      captionTrack.srclang = (PLAYER_CONFIG.languages[activeLang] || { srclang: "en" }).srclang;
+      video.load();
+
+      video.addEventListener("loadedmetadata", function onMeta() {
+        video.removeEventListener("loadedmetadata", onMeta);
+        video.playbackRate = parseFloat(speedSelect.value) || 1;
+        if (preservePosition && resumeTime < video.duration) {
+          video.currentTime = resumeTime;
+        }
+        if (wasPlaying) {
+          video.play().catch(function () {});
+        }
+      });
+
+      renderTabs();
+      renderMarkers();
+    }
+
+    function renderTabs() {
+      chapterTabs.innerHTML = "";
+      PLAYER_CONFIG.chapters.forEach(function (ch, idx) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn" + (idx === activeChapterIndex ? " is-active" : "");
+        btn.textContent = ch.tab;
+        btn.addEventListener("click", function () {
+          if (activeChapterIndex !== idx) {
+            activeChapterIndex = idx;
+            loadMedia(false);
+          }
+        });
+        chapterTabs.appendChild(btn);
+      });
+    }
+
+    function renderMarkers() {
+      markerPills.innerHTML = "";
+      const chapter = PLAYER_CONFIG.chapters[activeChapterIndex];
+      chapter.markers.forEach(function (m, idx) {
+        const pill = document.createElement("button");
+        pill.type = "button";
+        pill.className = "marker-pill";
+        pill.dataset.markerIndex = String(idx);
+
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "marker-time";
+        timeSpan.textContent = fmtTime(m.sec);
+
+        const labelSpan = document.createElement("span");
+        labelSpan.textContent = m.label;
+
+        pill.appendChild(timeSpan);
+        pill.appendChild(labelSpan);
+        pill.addEventListener("click", function () {
+          video.currentTime = m.sec;
+          video.play().catch(function () {});
+        });
+        markerPills.appendChild(pill);
+      });
+    }
+
+    video.addEventListener("timeupdate", function () {
+      const chapter = PLAYER_CONFIG.chapters[activeChapterIndex];
+      const t = video.currentTime;
+      let activeIdx = -1;
+      chapter.markers.forEach(function (m, idx) {
+        if (t >= m.sec) activeIdx = idx;
+      });
+      Array.from(markerPills.children).forEach(function (el, idx) {
+        el.classList.toggle("is-current", idx === activeIdx);
+      });
+    });
+
+    speedSelect.addEventListener("change", function () {
+      video.playbackRate = parseFloat(speedSelect.value) || 1;
+    });
+
+    langButtons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const nextLang = btn.dataset.lang;
+        if (nextLang && nextLang !== activeLang) {
+          activeLang = nextLang;
+          langButtons.forEach(function (b) {
+            b.classList.toggle("is-active", b.dataset.lang === activeLang);
+          });
+          loadMedia(true);
+        }
+      });
+    });
+
+    themeBtn.addEventListener("click", function () {
+      const root = document.documentElement;
+      const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      themeLabel.textContent = next === "dark" ? "Light" : "Dark";
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.target && ["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName)) return;
+      if (ev.key === " " || ev.key.toLowerCase() === "k") {
+        ev.preventDefault();
+        if (video.paused) video.play().catch(function () {});
+        else video.pause();
+      } else if (ev.key.toLowerCase() === "j") {
+        video.currentTime = Math.max(0, video.currentTime - 5);
+      } else if (ev.key.toLowerCase() === "l") {
+        video.currentTime = Math.min(video.duration || 0, video.currentTime + 5);
+      } else if (ev.key.toLowerCase() === "m") {
+        video.muted = !video.muted;
+      } else if (ev.key.toLowerCase() === "f") {
+        if (!document.fullscreenElement) video.requestFullscreen().catch(function () {});
+        else document.exitFullscreen().catch(function () {});
+      }
+    });
+
+    renderTabs();
+    renderMarkers();
+  </script>
+</body>
+</html>
