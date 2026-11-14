@@ -43,7 +43,43 @@ Use Pango/Cairo native primitives exclusively:
 - **Topology Geometry**: `RoundedRectangle`, `Rectangle`, `Circle`, `Dot`, `Line`, `Arrow`, `CurvedArrow`, `DashedVMobject`, `SurroundingRectangle`.
 - **Dynamic Counters**: Drive numeric readouts (such as token-bucket balance or WAL commit index) with a `ValueTracker` and `always_redraw` around `Text(f"Tokens: {int(tracker.get_value())}", ...)` rather than `DecimalNumber` (which defaults to `MathTex` unless configured carefully).
 
-## 3. State Hygiene & Anti-Collision Choreography
+## 3. Golden Schematic Rule: Port-Anchored Orthogonal Connectors
+
+**NEVER call `Arrow(card_a, card_b)` directly on two `Mobject`s when building architecture block diagrams.**
+Manim's `Arrow(mobj_a, mobj_b)` casts a ray between the two bounding-box centers (`mobj_a.get_center() -> mobj_b.get_center()`). Whenever two cards differ in width, height, or Y-offset—or when a wide bus bar connects to a narrower worker card—center-aimed rays produce crooked diagonal arrows and off-center port attachments.
+
+Always route schematic wires through the port-anchored orthogonal primitives in `assets/nord_manim_theme.py`:
+
+- **Horizontal Same-Tier Edges (`dy = 0`)**:
+  ```python
+  edge_gw_lim = connect_h(gw_card, limiter_card)  # locks start_y == end_y
+  edge_req = connect_h(gw_card, limiter_card, y=0.38)  # explicit port y for parallel request/reply
+  edge_rep = connect_h(limiter_card, gw_card, y=0.02, dashed=True)
+  ```
+- **Vertical Cross-Tier Edges (`dx = 0`)**:
+  ```python
+  edge_bus_worker = connect_v(shared_bus_card, worker_col_card)  # locks start_x == end_x at shared column x
+  ```
+- **90-Degree Multi-Segment Elbows (Offset Columns & Tiers)**:
+  ```python
+  edge_dlq = connect_elbow(
+      [
+          (limiter_card.get_bottom()[0], limiter_card.get_bottom()[1] - 0.10),
+          (limiter_card.get_bottom()[0], -1.65),
+          (dlq_card.get_left()[0] - 0.10, -1.65),
+      ],
+      color=STATUS_WARN,
+      dashed=True,
+  )
+  ```
+- **Packet Choreography Along Orthogonal Wires**:
+  ```python
+  spent = animate_packet_along(self, edge_dlq, label="retry_event", color=STATUS_WARN, run_time=0.85)
+  ```
+- **Pure-Python Schematic Verification Gate**:
+  Call `assert_all_orthogonal(connectors, cards)` right after constructing a scene's edges (and in unit tests via `.wire_points` + `(left, right, bottom, top)` card tuples without needing Manim installed). It raises `AssertionError` immediately if any segment is diagonal (`dx > 0` and `dy > 0`) or crosses through the interior of any card bounding box.
+
+## 4. State Hygiene & Anti-Collision Choreography
 
 Overlapping text labels are the single most common defect in generated Manim scenes. Follow four rules across every beat transition:
 
@@ -52,7 +88,7 @@ Overlapping text labels are the single most common defect in generated Manim sce
 3. **Separate Edge Labels from Parallel Arrows**: For bidirectional request/response paths between Node A and Node B, offset forward arrows up by `+0.16 * UP` and return arrows down by `+0.16 * DOWN`. Place the request label above the top arrow and the response label below the bottom arrow.
 4. **Dim Inactive Subgraphs During Focus Beats**: When explaining an edge-case failure on one branch (e.g., primary replica timeout and WAL promotion), animate unrelated upstream nodes to `opacity=0.32` (`upstream_group.animate.set_opacity(0.32)`) and restore `set_opacity(1.0)` when returning to steady-state flow.
 
-## 4. Two-Speed Rendering & Multi-Scene Concatenation
+## 5. Two-Speed Rendering & Multi-Scene Concatenation
 
 ### Fast Geometry Verification Before Full HD Render
 

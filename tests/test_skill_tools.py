@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from array import array
+import http.server
+import io
 import json
 import math
 from pathlib import Path
@@ -10,6 +12,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
+from typing import Any
 import wave
 
 import pytest
@@ -21,7 +25,7 @@ sys.path.insert(0, str(SKILL_DIR / "assets"))
 import check_scene_bounds  # noqa: E402
 import lint  # noqa: E402
 import mux_narration  # noqa: E402
-from nord_manim_theme import BeatTimer  # noqa: E402
+from nord_manim_theme import BeatTimer, assert_all_orthogonal  # noqa: E402
 
 
 def _make_sine_wav(path: Path, duration_s: float, sample_rate: int = 22050, freq_hz: float = 440.0) -> None:
@@ -433,3 +437,284 @@ def test_lint_catches_invalid_vtt_and_unsafe_html(tmp_path: Path) -> None:
     assert any("Emoji" in e for e in html_errs)
     assert any("<video>" in e for e in html_errs)
     assert any("Private/internal" in e for e in html_errs)
+
+
+# ---------------------------------------------------------------------------
+# 4. Orthogonal schematic connector tests (pure stdlib, zero Manim required)
+# ---------------------------------------------------------------------------
+
+
+class _FakeWire:
+    def __init__(self, wire_points: list[tuple[float, float]]) -> None:
+        self.wire_points = wire_points
+
+
+def test_assert_all_orthogonal_accepts_hv_and_elbows_and_rejects_diagonals() -> None:
+    cards = [
+        ("gw", -5.75, -3.25, -0.42, 0.82),
+        ("limiter", -2.75, -0.25, -0.42, 0.82),
+        ("cache", 0.25, 2.75, -0.42, 0.82),
+        ("dlq", 0.25, 2.75, -2.35, -1.15),
+    ]
+    valid_connectors = [
+        _FakeWire([(-3.15, 0.20), (-2.85, 0.20)]),  # horizontal
+        _FakeWire([(1.50, -0.52), (1.50, -1.05)]),  # vertical
+        _FakeWire([(-1.50, -0.52), (-1.50, -1.75), (0.15, -1.75)]),  # 90-degree elbow
+    ]
+    assert_all_orthogonal(valid_connectors, cards)
+
+    diagonal_connector = _FakeWire([(-3.15, 0.35), (-2.85, -0.10)])
+    with pytest.raises(AssertionError, match="diagonal"):
+        assert_all_orthogonal([diagonal_connector], cards)
+
+
+def test_assert_all_orthogonal_rejects_wire_crossing_card_interior() -> None:
+    cards = [
+        ("gw", -5.5, -3.5, -0.5, 0.5),
+        ("middle_blocker", -1.2, 1.2, -0.5, 0.5),
+        ("db", 3.5, 5.5, -0.5, 0.5),
+    ]
+    # Horizontal wire from gw directly to db cuts straight through middle_blocker
+    cutting_wire = _FakeWire([(-3.4, 0.0), (3.4, 0.0)])
+    with pytest.raises(AssertionError, match="crosses interior"):
+        assert_all_orthogonal([cutting_wire], cards)
+
+    # Routing around middle_blocker via a 90-degree U-elbow passes cleanly
+    routed_elbow = _FakeWire([(-3.4, 0.0), (-3.4, 1.2), (3.4, 1.2), (3.4, 0.0)])
+    assert_all_orthogonal([routed_elbow], cards)
+
+
+def test_connect_h_v_elbow_and_animate_packet_along_with_stub_manim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import types
+    import nord_manim_theme
+
+    class StubMobj:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.corners: list[list[float]] = []
+            self.updaters: list[Any] = []
+            self.width = 0.5
+            self.height = 0.2
+
+        def set_points_as_corners(self, pts: list[list[float]]) -> "StubMobj":
+            self.corners = pts
+            return self
+
+        def move_to(self, pt: Any) -> "StubMobj":
+            return self
+
+        def next_to(self, target: Any, direction: Any, buff: float = 0.0) -> "StubMobj":
+            return self
+
+        def add_updater(self, fn: Any) -> None:
+            self.updaters.append(fn)
+
+        def remove_updater(self, fn: Any) -> None:
+            if fn in self.updaters:
+                self.updaters.remove(fn)
+
+        def __getitem__(self, idx: int) -> "StubMobj":
+            return self.args[idx]
+
+    stub_manim = types.SimpleNamespace(
+        Arrow=StubMobj,
+        DoubleArrow=StubMobj,
+        DashedVMobject=lambda mobj, num_dashes=12: StubMobj(mobj, num_dashes=num_dashes),
+        VMobject=StubMobj,
+        VGroup=StubMobj,
+        Dot=StubMobj,
+        Circle=StubMobj,
+        Text=StubMobj,
+        MoveAlongPath=lambda mob, path: ("MoveAlongPath", mob, path),
+        FadeOut=lambda mob: ("FadeOut", mob),
+        BOLD="BOLD",
+        UP=[0.0, 1.0, 0.0],
+        smooth=lambda t: t,
+    )
+    monkeypatch.setattr(nord_manim_theme, "_require_manim", lambda: stub_manim)
+
+    card_a = ("gw", -5.5, -3.5, -0.6, 0.6)
+    card_b = ("limiter", -2.0, 0.0, -0.4, 0.8)  # different height/center, overlapping Y
+    card_c = ("storage", -2.0, 0.0, -2.6, -1.4)
+
+    eh = nord_manim_theme.connect_h(card_a, card_b, buff=0.10)
+    ev = nord_manim_theme.connect_v(card_b, card_c, buff=0.10, dashed=True)
+    ee = nord_manim_theme.connect_elbow([(-3.4, 0.1), (-2.1, 0.1)], dashed=False)
+    assert_all_orthogonal([eh, ev, ee], [card_a, card_b, card_c])
+
+    # Verify connect_elbow rejects diagonal input immediately
+    with pytest.raises(ValueError, match="diagonal"):
+        nord_manim_theme.connect_elbow([(-3.0, 0.0), (-1.0, 0.5)])
+
+    played: list[tuple[Any, ...]] = []
+
+    class StubScene:
+        def add(self, *mobs: Any) -> None:
+            return
+
+        def play(self, *anims: Any, **kwargs: Any) -> None:
+            played.append((anims, kwargs))
+
+    consumed = nord_manim_theme.animate_packet_along(StubScene(), eh, label="POST /v1", run_time=0.65)
+    assert consumed == pytest.approx(0.85, abs=1e-4)
+    assert len(played) == 2
+
+
+# ---------------------------------------------------------------------------
+# 5. OpenAI-compatible HTTP TTS (/v1/audio/speech) & EBU R128 loudnorm tests
+# ---------------------------------------------------------------------------
+
+
+def _build_wav_bytes(duration_s: float = 1.25, sample_rate: int = 24000, freq_hz: float = 360.0) -> bytes:
+    n_samples = int(round(duration_s * sample_rate))
+    samples = array(
+        "h",
+        (
+            int(10000 * math.sin(2.0 * math.pi * freq_hz * idx / sample_rate))
+            for idx in range(n_samples)
+        ),
+    )
+    if sys.byteorder != "little":
+        samples.byteswap()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(samples.tobytes())
+    return buf.getvalue()
+
+
+def test_synthesize_with_http_tts_and_loudnorm_muxing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_requests: list[dict[str, Any]] = []
+    synthetic_wav = _build_wav_bytes(duration_s=1.35, sample_rate=24000)
+
+    class MockSpeechHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(length)
+            captured_requests.append(
+                {
+                    "path": self.path,
+                    "auth": self.headers.get("Authorization", ""),
+                    "body": json.loads(raw_body.decode("utf-8")),
+                }
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(synthetic_wav)))
+            self.end_headers()
+            self.wfile.write(synthetic_wav)
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), MockSpeechHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        monkeypatch.setenv("MOCK_TTS_API_TOKEN", "test-secret-token-xyz")
+        base_v1_url = f"http://127.0.0.1:{port}/v1"
+
+        # Direct unit call check (verifying /v1 -> /v1/audio/speech normalization too)
+        direct_wav = tmp_path / "direct_http.wav"
+        mux_narration.synthesize_with_http_tts(
+            "Atomic quorum replication keeps writes durable.",
+            direct_wav,
+            url=base_v1_url,
+            api_key_env="MOCK_TTS_API_TOKEN",
+            model="gpt-4o-mini-tts",
+            voice="marin",
+            instructions="Warm, measured documentary cadence.",
+        )
+        assert direct_wav.exists() and direct_wav.stat().st_size > 1000
+        assert captured_requests[0]["path"] == "/v1/audio/speech"
+        assert captured_requests[0]["auth"] == "Bearer test-secret-token-xyz"
+        assert captured_requests[0]["body"]["model"] == "gpt-4o-mini-tts"
+        assert captured_requests[0]["body"]["voice"] == "marin"
+        assert captured_requests[0]["body"]["response_format"] == "wav"
+        assert captured_requests[0]["body"]["instructions"] == "Warm, measured documentary cadence."
+
+        # End-to-end CLI check: Pass 1 HTTP synthesis + Pass 2 mux with --loudnorm-lufs -18.0
+        manifest = {
+            "lead_in_s": 0.15,
+            "inter_beat_gap_s": 0.20,
+            "phonetic_glossary": {"WAL": "write-ahead log"},
+            "beats": [
+                {
+                    "id": "http_b1",
+                    "min_visual_s": 1.8,
+                    "text": "Leader commits only after WAL quorum acknowledges.",
+                },
+                {
+                    "id": "http_b2",
+                    "min_visual_s": 1.8,
+                    "text": "Followers replay committed segments in strict offset order.",
+                },
+            ],
+        }
+        manifest_path = tmp_path / "http_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        wav_dir = tmp_path / "http_wavs"
+        timings_out = tmp_path / "http_timings.json"
+        raw_mp4 = tmp_path / "raw_input.mp4"
+        _make_test_mp4(raw_mp4, duration_s=2.5, pix_fmt="yuv420p")
+        out_mp4 = tmp_path / "narrated_loudnorm.mp4"
+
+        rc = mux_narration.main(
+            [
+                "--manifest",
+                str(manifest_path),
+                "--wav-dir",
+                str(wav_dir),
+                "--http-tts-url",
+                f"http://127.0.0.1:{port}/v1/audio/speech",
+                "--http-tts-key-env",
+                "MOCK_TTS_API_TOKEN",
+                "--http-tts-model",
+                "gpt-4o-mini-tts",
+                "--http-tts-voice",
+                "cedar",
+                "--http-tts-instructions",
+                "Calm technical narrator; crisp clause boundaries.",
+                "--emit-timings",
+                str(timings_out),
+                "--video",
+                str(raw_mp4),
+                "--loudnorm-lufs",
+                "-18.0",
+                "--output",
+                str(out_mp4),
+            ]
+        )
+        assert rc == 0
+        assert len(captured_requests) == 3
+        assert "write-ahead log" in captured_requests[1]["body"]["input"]
+        assert captured_requests[1]["body"]["voice"] == "cedar"
+        assert out_mp4.exists()
+        assert lint.lint_mp4(out_mp4, require_audio=True) == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_synthesize_with_http_tts_requires_key_for_remote_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MISSING_REMOTE_TTS_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="MISSING_REMOTE_TTS_KEY"):
+        mux_narration.synthesize_with_http_tts(
+            "Unauthenticated remote call must fail before network.",
+            tmp_path / "unused.wav",
+            url="https://api.example.com/v1/audio/speech",
+            api_key_env="MISSING_REMOTE_TTS_KEY",
+        )

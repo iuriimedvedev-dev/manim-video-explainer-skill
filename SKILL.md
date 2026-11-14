@@ -1,6 +1,6 @@
 ---
 name: manim-video-explainer
-description: Render high-definition 1080p60 technical explainer videos, step-by-step system walkthroughs, and multi-act architecture animations with Manim Community (LaTeX-free), optional beat-synchronized offline neural TTS voiceover (Piper or CLI TTS) with WebVTT captions, and an optional standalone HTML5 chapter player. Use when the user asks for an animated video walkthrough, Manim architecture/process animation, narrated video tutorial, or step-by-step visual explainer.
+description: Render high-definition 1080p60 technical explainer videos, step-by-step system walkthroughs, and multi-act architecture animations with Manim Community (LaTeX-free), port-anchored orthogonal schematic connectors, optional beat-synchronized neural TTS voiceover (offline Piper, OpenAI-compatible /v1/audio/speech HTTP TTS, or CLI TTS) with EBU R128 loudness normalization and WebVTT captions, and an optional standalone HTML5 chapter player. Use when the user asks for an animated video walkthrough, Manim architecture/process animation, narrated video tutorial, or step-by-step visual explainer.
 ---
 
 # Manim 1080p60 Technical Video Explainer & Synchronized Voiceover System
@@ -8,15 +8,15 @@ description: Render high-definition 1080p60 technical explainer videos, step-by-
 ## Overview and Bundled Resources
 
 Author crisp, deterministic `1920x1080 @ 60fps` technical explainer videos and architecture walkthroughs in pure Python using Manim Community without requiring `pdflatex` or `MacTeX`.
-Pair animations optionally with sample-accurate offline neural voiceover (Piper ONNX or any CLI TTS), synchronized `.vtt` WebVTT subtitles, and a zero-CDN offline HTML5 chapter player.
+Pair animations optionally with sample-accurate neural voiceover (offline Piper ONNX, any OpenAI-compatible `/v1/audio/speech` HTTP endpoint, or custom CLI TTS), EBU R128 loudness normalization, synchronized `.vtt` WebVTT subtitles, and a zero-CDN offline HTML5 chapter player.
 
-- `assets/nord_manim_theme.py`: Nord Polar/Frost/Aurora palette tokens, safe-frame layout constants, `BeatTimer` synchronization helper, and LaTeX-free primitives (`make_header_banner`, `make_node_card`, `make_badge`, `make_edge_arrow`, `animate_packet`, `animate_blocked_pulse`, `safe_fit_text`).
+- `assets/nord_manim_theme.py`: Nord Polar/Frost/Aurora palette tokens, safe-frame layout constants, `BeatTimer` synchronization helper, LaTeX-free primitives (`make_header_banner`, `make_node_card`, `make_badge`, `animate_blocked_pulse`, `safe_fit_text`), and strict port-anchored orthogonal schematic connectors (`connect_h`, `connect_v`, `connect_elbow`, `animate_packet_along`, `assert_all_orthogonal`).
 - `assets/video_player_template.html`: Standalone, zero-CDN Nord dark/light HTML5 Cinema Player with chapter tabs, clickable beat markers, playback rate (`0.75x..2.0x`), and optional bilingual audio/caption switching.
 - `check_scene_bounds.py`: Pre-render layout verifier that checks Manim scenes or JSON checkpoints for `[-6.8, 6.8] x [-3.75, 3.75]` frame overflow and sibling text-label collisions.
-- `mux_narration.py`: Stdlib Python CLI that synthesizes per-beat WAVs via Piper or a custom TTS command, emits `beat_timings.json`, assembles a sample-accurate master WAV track, clone-pads trailing video frames (`tpad=stop_mode=clone`) so speech never clips, muxes H.264 + AAC (`+faststart`), and writes `.vtt` captions.
+- `mux_narration.py`: Stdlib Python CLI that synthesizes per-beat WAVs via Piper, an OpenAI-compatible HTTP `/v1/audio/speech` endpoint, or a custom TTS command, emits `beat_timings.json`, assembles a sample-accurate master WAV track, clone-pads trailing video frames (`tpad=stop_mode=clone`) so speech never clips, optionally normalizes loudness (`--loudnorm-lufs -18.0`), muxes H.264 + AAC (`+faststart`), and writes `.vtt` captions.
 - `lint.py`: Output bundle verifier checking `ffprobe` H.264 `yuv420p` + audio streams, WebVTT header/cue monotonicity, and offline HTML5 player CSP/zero-CDN/zero-emoji invariants.
-- `references/manim-layout-and-choreography.md`: Read when designing multi-node topologies, dynamic counters, bidirectional arrows, or multi-scene `ffmpeg` concatenation.
-- `references/voiceover-and-commentary.md`: Read when authoring narration manifests, phonetic pronunciation glossaries for technical acronyms, or bilingual voiceover tracks.
+- `references/manim-layout-and-choreography.md`: Read when designing multi-node topologies, orthogonal bus/elbow routing, dynamic counters, bidirectional arrows, or multi-scene `ffmpeg` concatenation.
+- `references/voiceover-and-commentary.md`: Read when authoring narration manifests, natural narrator prosody instructions, phonetic pronunciation glossaries, EBU R128 normalization, or bilingual voiceover tracks.
 
 ---
 
@@ -50,11 +50,12 @@ uv venv venv
 uv pip install --python venv/bin/python manim piper-tts
 ```
 
-### Strict LaTeX-Free Authoring Rules
+### Strict LaTeX-Free & Orthogonal Schematic Rules
 
 1. **Zero TeX Subprocesses**: Never use `Tex`, `MathTex`, `Title`, or `DecimalNumber` (which invoke `pdflatex`/`dvisvgm`). Use `Text`, `MarkupText` (`<b>`, `<i>`, `<sub>`, `<sup>`, `<span foreground="...">`), `Code`, `RoundedRectangle`, `Arrow`, `DashedVMobject`, and `MoveAlongPath`.
-2. **Safe-Frame Coordinate Grid**: Manim's 16:9 canvas spans `[-7.11, 7.11] x [-4.0, 4.0]`. Keep all authored content inside `[-6.6, 6.6] x [-3.5, 3.5]`, and keep `y < -3.05` empty whenever WebVTT subtitles are displayed.
-3. **Import `assets/nord_manim_theme.py`**: Set `self.camera.background_color = BG_DARK` and construct cards, badges, packet animations, and beat holds consistently:
+2. **Golden Schematic Rule (Port-Anchored Orthogonal Wires)**: **NEVER call `Arrow(card_a, card_b)` directly on two `Mobject`s** when building architecture block diagrams—Manim aims rays between bounding-box centers and produces crooked diagonal arrows whenever card widths or Y-positions differ. Route every edge via `connect_h(card_from, card_to, y=...)`, `connect_v(card_from, card_to, x=...)`, or `connect_elbow(points)`, animate packets with `animate_packet_along(self, edge, ...)`, and validate wire geometry with `assert_all_orthogonal(connectors, cards)`.
+3. **Safe-Frame Coordinate Grid**: Manim's 16:9 canvas spans `[-7.11, 7.11] x [-4.0, 4.0]`. Keep all authored content inside `[-6.6, 6.6] x [-3.5, 3.5]`, and keep `y < -3.05` empty whenever WebVTT subtitles are displayed.
+4. **Import `assets/nord_manim_theme.py`**: Set `self.camera.background_color = BG_DARK` and construct cards, orthogonal connectors, packet animations, and beat holds consistently:
 
 ```python
 from pathlib import Path
@@ -68,8 +69,8 @@ from manim import Create, FadeIn, Scene, VGroup
 from check_scene_bounds import dump_checkpoints
 from nord_manim_theme import (
     ACCENT_BLUE, ACCENT_CYAN, BG_DARK, STATUS_ERR, STATUS_OK,
-    BeatTimer, animate_blocked_pulse, animate_packet,
-    make_edge_arrow, make_header_banner, make_node_card,
+    BeatTimer, animate_blocked_pulse, animate_packet_along,
+    assert_all_orthogonal, connect_h, make_header_banner, make_node_card,
 )
 
 
@@ -88,17 +89,17 @@ class Act1RateLimiter(Scene):
         cache = make_node_card("Read Cache", "Single-Flight TTL", width=2.5, accent=ACCENT_CYAN).move_to([1.5, 0.2, 0])
         db = make_node_card("Primary DB", "WAL Quorum", width=2.5, accent=STATUS_OK).move_to([4.5, 0.2, 0])
 
-        edges = VGroup(
-            make_edge_arrow(gw, limiter),
-            make_edge_arrow(limiter, cache),
-            make_edge_arrow(cache, db, dashed=True),
-        )
+        e_gw_lim = connect_h(gw, limiter)
+        e_lim_cache = connect_h(limiter, cache)
+        e_cache_db = connect_h(cache, db, dashed=True)
+        assert_all_orthogonal([e_gw_lim, e_lim_cache, e_cache_db], [gw, limiter, cache, db])
+        edges = VGroup(e_gw_lim, e_lim_cache, e_cache_db)
 
         self.play(FadeIn(header), FadeIn(gw), FadeIn(limiter), FadeIn(cache), FadeIn(db), Create(edges), run_time=1.1)
-        spent = animate_packet(self, gw.get_right(), limiter.get_left(), label="POST /orders", run_time=0.7)
+        spent = animate_packet_along(self, e_gw_lim, label="POST /orders", run_time=0.7)
         timer.hold(self, "act1_ingress", consumed_anim_s=1.1 + spent, fallback_s=3.2, checkpoints=checkpoints)
 
-        spent = animate_packet(self, limiter.get_right(), cache.get_left(), label="token=99", color=STATUS_OK, run_time=0.7)
+        spent = animate_packet_along(self, e_lim_cache, label="token=99", color=STATUS_OK, run_time=0.7)
         timer.hold(self, "act1_bucket", consumed_anim_s=spent, fallback_s=3.8, checkpoints=checkpoints)
 
         spent = animate_blocked_pulse(self, limiter, reason_label="429 RATE LIMITED", color=STATUS_ERR, run_time=0.95)
@@ -173,6 +174,7 @@ Viewers already see `"API Gateway -> Rate Limiter"` immediately. Write **explana
 2. **Pass 1 — Synthesize Per-Beat WAVs & Emit Exact Timings**:
 
 ```bash
+# Option A: Offline Piper ONNX neural TTS (zero network calls)
 python3 .agents/skills/manim-video-explainer/mux_narration.py \
   --manifest tmp/narration_manifest.json \
   --scene-id act1 \
@@ -180,9 +182,21 @@ python3 .agents/skills/manim-video-explainer/mux_narration.py \
   --piper-bin ./venv/bin/piper \
   --model ~/.cache/piper-voices/en_US-lessac-medium.onnx \
   --emit-timings tmp/beat_timings.json
+
+# Option B: OpenAI-compatible HTTP neural TTS (/v1/audio/speech, stdlib urllib)
+python3 .agents/skills/manim-video-explainer/mux_narration.py \
+  --manifest tmp/narration_manifest.json \
+  --scene-id act1 \
+  --wav-dir cache/beats_en \
+  --http-tts-url https://api.openai.com/v1/audio/speech \
+  --http-tts-key-env OPENAI_API_KEY \
+  --http-tts-model gpt-4o-mini-tts \
+  --http-tts-voice cedar \
+  --http-tts-instructions "Calm, clear technical documentary narrator; brief pauses at clauses." \
+  --emit-timings tmp/beat_timings.json
 ```
 
-(Any custom CLI synthesizer can replace Piper via `--tts-cmd "my-tts --out {wav} --text {text}"`, or pre-rendered `.wav` files can be placed directly in `--wav-dir`.)
+(Any custom CLI synthesizer can also be used via `--tts-cmd "my-tts --out {wav} --text {text}"`, or pre-rendered `.wav` files can be placed directly in `--wav-dir`.)
 
 3. **Render 1080p60 Manim Video Driven by `tmp/beat_timings.json`**:
 
@@ -190,7 +204,7 @@ python3 .agents/skills/manim-video-explainer/mux_narration.py \
 ./venv/bin/manim -qh --fps 60 scenes.py Act1RateLimiter
 ```
 
-4. **Pass 2 — Sample-Accurate Master Track Assembly, Tail Guard & AAC Mux**:
+4. **Pass 2 — Sample-Accurate Master Track Assembly, Loudness Normalization, Tail Guard & AAC Mux**:
 
 ```bash
 python3 .agents/skills/manim-video-explainer/mux_narration.py \
@@ -198,11 +212,12 @@ python3 .agents/skills/manim-video-explainer/mux_narration.py \
   --scene-id act1 \
   --wav-dir cache/beats_en \
   --video media/videos/scenes/1080p60/Act1RateLimiter.mp4 \
+  --loudnorm-lufs -18.0 \
   --output output/act1_en.mp4 \
   --vtt output/act1_en.vtt
 ```
 
-`mux_narration.py` places every beat WAV at `round(start_s * sample_rate)` on a 16-bit PCM master track, extends the final video frame via `tpad=stop_mode=clone` whenever final speech exceeds video duration (zero clipped words), encodes `-c:a aac -b:a 160k -movflags +faststart`, and writes `output/act1_en.vtt`.
+`mux_narration.py` places every beat WAV at `round(start_s * sample_rate)` on a 16-bit PCM master track, extends the final video frame via `tpad=stop_mode=clone` whenever final speech exceeds video duration (zero clipped words), optionally applies EBU R128 loudness normalization (`--loudnorm-lufs -18.0`) so volume stays consistent across chapters, encodes `-c:a aac -b:a 160k -movflags +faststart`, and writes `output/act1_en.vtt`.
 
 Read `references/voiceover-and-commentary.md` for Bad-vs-Good commentary transformations, non-English phonetic overrides, and bilingual audio workflows.
 

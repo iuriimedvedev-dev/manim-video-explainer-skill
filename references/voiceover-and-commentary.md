@@ -1,4 +1,4 @@
-# Beat-Synchronized Voiceover, Explanatory Commentary & Piper TTS
+# Beat-Synchronized Voiceover, Explanatory Commentary & Neural TTS
 
 ## 1. The Golden Narration Rule: Process Commentary, Never Label Reading
 
@@ -29,15 +29,15 @@ Eliminate drift completely with the two-pass Beat-First pipeline:
 
 1. **Author `narration_manifest.json`**: Define ordered beats with `id`, `min_visual_s`, clean `text` (for `.vtt` subtitles), and optional `tts_phonetic_text` / `phonetic_glossary`.
 2. **Pass 1 — Synthesize Beats & Measure Exact Durations**:
-   Run `mux_narration.py --manifest narration_manifest.json --piper-bin piper --model <voice.onnx> --emit-timings beat_timings.json`.
+   Run `mux_narration.py --manifest narration_manifest.json ... --emit-timings beat_timings.json` using offline Piper (`--piper-bin` + `--model`), an OpenAI-compatible HTTP `/v1/audio/speech` endpoint (`--http-tts-url`), or a custom CLI synthesizer (`--tts-cmd`).
    `mux_narration.py` synthesizes one `.wav` per beat, inspects exact PCM frame counts (`nframes / sample_rate`), and records `recommended_wait_s = max(min_visual_s, audio_duration_s + post_pad_s)` per `beat_id`.
 3. **Render Manim Scene Driven by `BeatTimer`**:
    Inside `construct(self)`, load `timer = BeatTimer("beat_timings.json")`.
    Track animation `run_time` spent during a beat (`anim_s = 0.8`), then call `timer.hold(self, "act1_quota_check", consumed_anim_s=anim_s)`.
    Because every Manim `play()` + `wait()` sum matches `slot_end_s - start_s`, visual transitions land cleanly on beat boundaries across a 3-minute video.
-4. **Pass 2 — Sample-Accurate Track Placement, Tail Guard & Mux**:
-   Run `mux_narration.py --manifest narration_manifest.json --video raw_scene.mp4 --output act1_en.mp4`.
-   Each beat's PCM samples are written at `round(start_s * sample_rate)` onto a 16-bit mono master buffer. If the final beat's audio extends past the rendered MP4 duration, `mux_narration.py` automatically appends `tpad=stop_mode=clone` so the final frame holds smoothly until speech finishes.
+4. **Pass 2 — Sample-Accurate Track Placement, Loudness Normalization, Tail Guard & Mux**:
+   Run `mux_narration.py --manifest narration_manifest.json --video raw_scene.mp4 --loudnorm-lufs -18.0 --output act1_en.mp4`.
+   Each beat's PCM samples are written at `round(start_s * sample_rate)` onto a 16-bit mono master buffer. If the final beat's audio extends past the rendered MP4 duration, `mux_narration.py` automatically appends `tpad=stop_mode=clone` so the final frame holds smoothly until speech finishes, while `--loudnorm-lufs -18.0` normalizes integrated loudness to broadcast EBU R128 standards across every act.
 
 ## 3. Phonetic Glossaries for Technical Acronyms
 
@@ -77,9 +77,33 @@ Separate **viewer captions** (`text`) from **synthesizer input** (`tts_phonetic_
 }
 ```
 
-`mux_narration.py` feeds `tts_phonetic_text` (or `text` transformed by `phonetic_glossary`) to Piper / `--tts-cmd`, while writing only clean `text` into `.vtt` subtitles.
+`mux_narration.py` feeds `tts_phonetic_text` (or `text` transformed by `phonetic_glossary`) to Piper, `--http-tts-url`, or `--tts-cmd`, while writing only clean `text` into `.vtt` subtitles.
 
-## 4. Offline Piper Voice Setup & Bilingual Walkthroughs
+## 4. Neural TTS Backends: Offline Piper, OpenAI-Compatible `/v1/audio/speech` & Loudness Normalization
+
+### Option A: OpenAI-Compatible HTTP Neural TTS (`/v1/audio/speech`)
+
+`mux_narration.py` includes a zero-dependency stdlib `urllib.request` client (`synthesize_with_http_tts`) compatible with OpenAI's `/v1/audio/speech` API as well as self-hosted OpenAI-compatible neural speech servers:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+
+python3 mux_narration.py \
+  --manifest tmp/narration_manifest.json \
+  --scene-id act1 \
+  --wav-dir cache/beats_en \
+  --http-tts-url https://api.openai.com/v1/audio/speech \
+  --http-tts-key-env OPENAI_API_KEY \
+  --http-tts-model gpt-4o-mini-tts \
+  --http-tts-voice cedar \
+  --http-tts-instructions "Calm, warm engineering documentary narrator; natural human pacing, slight pause at commas, crisp emphasis on state invariants." \
+  --emit-timings tmp/beat_timings.json
+```
+
+- **Natural Prosody Instructions**: Voices such as `cedar` and `marin` on `gpt-4o-mini-tts` accept `--http-tts-instructions` (or manifest/beat-level `"tts_instructions"`) to steer pacing, warmth, and clause cadence without altering subtitle text.
+- **Broadcast-Consistent Chapter Loudness (`--loudnorm-lufs`)**: Neural voices can vary in RMS loudness across acts or languages. Pass `--loudnorm-lufs -18.0` during Pass 2 muxing to apply FFmpeg's EBU R128 `loudnorm=I=-18.0:TP=-1.5:LRA=11` filter at `48 kHz` AAC so viewers never reach for the volume slider between chapters.
+
+### Option B: Offline Piper ONNX Voice Setup & Bilingual Walkthroughs
 
 Piper runs 100% locally on CPU in milliseconds per sentence using `.onnx` + `.onnx.json` model pairs:
 

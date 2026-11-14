@@ -3,15 +3,15 @@
 
 Workflow:
   Pass 1 (Pre-render timings):
-    Synthesize per-beat WAV files with Piper (or any CLI TTS) from a JSON narration
-    manifest and emit `beat_timings.json` so Manim scenes can hold each beat for the
-    exact spoken duration (`BeatTimer`).
+    Synthesize per-beat WAV files via offline Piper ONNX, an OpenAI-compatible HTTP
+    `/v1/audio/speech` endpoint, or any CLI TTS from a JSON narration manifest and emit
+    `beat_timings.json` so Manim scenes hold each beat for the exact spoken duration (`BeatTimer`).
 
-  Pass 2 (Sample-accurate master mux & WebVTT):
+  Pass 2 (Sample-accurate master mux, EBU R128 loudness & WebVTT):
     Place every beat WAV onto a sample-accurate 16-bit PCM master track, clone-pad the
     final video frame (`tpad=stop_mode=clone`) whenever trailing speech exceeds video
-    length so zero words ever clip, mux H.264 (`yuv420p`) + AAC (`160k`, `+faststart`),
-    and emit a synchronized `.vtt` WebVTT subtitle file using clean display text.
+    length so zero words ever clip, optionally normalize loudness (`--loudnorm-lufs`),
+    mux H.264 (`yuv420p`) + AAC (`160k`, `+faststart`), and emit clean `.vtt` subtitles.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import argparse
 from array import array
 from dataclasses import asdict, dataclass
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -28,6 +29,9 @@ import subprocess
 import sys
 import tempfile
 from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
 import wave
 
 
@@ -37,6 +41,9 @@ DEFAULT_POST_PAD_S = 0.25
 DEFAULT_INTER_BEAT_GAP_S = 0.20
 DEFAULT_LEAD_IN_S = 0.15
 DEFAULT_TAIL_PAD_S = 0.30
+DEFAULT_HTTP_TTS_KEY_ENV = "OPENAI_API_KEY"
+DEFAULT_HTTP_TTS_MODEL = "gpt-4o-mini-tts"
+DEFAULT_HTTP_TTS_VOICE = "cedar"
 
 
 @dataclass
@@ -174,6 +181,123 @@ def synthesize_with_template(
         raise RuntimeError(f"TTS command failed (exit {proc.returncode}): {stderr_msg}")
 
 
+def _resolve_speech_endpoint(url: str) -> str:
+    """Normalizes a base `/v1` URL or returns an explicit `/v1/audio/speech` URL unchanged."""
+    cleaned = url.strip()
+    if not cleaned:
+        raise ValueError("--http-tts-url cannot be empty.")
+    stripped = cleaned.rstrip("/")
+    if stripped.endswith("/v1"):
+        return f"{stripped}/audio/speech"
+    return cleaned
+
+
+def synthesize_with_http_tts(
+    spoken_text: str,
+    out_wav: Path,
+    *,
+    url: str,
+    api_key: str | None = None,
+    api_key_env: str = DEFAULT_HTTP_TTS_KEY_ENV,
+    model: str = DEFAULT_HTTP_TTS_MODEL,
+    voice: str = DEFAULT_HTTP_TTS_VOICE,
+    instructions: str | None = None,
+    response_format: str = "wav",
+    speed: float | None = None,
+    timeout_s: float = 60.0,
+) -> None:
+    """Synthesizes `spoken_text` via any OpenAI-compatible HTTP `/v1/audio/speech` endpoint."""
+    endpoint = _resolve_speech_endpoint(url)
+    parsed = urllib.parse.urlparse(endpoint)
+    hostname = (parsed.hostname or "").lower()
+    is_loopback = hostname in {"127.0.0.1", "localhost", "::1"}
+
+    token = api_key if api_key is not None else os.environ.get(api_key_env, "").strip()
+    if not token and not is_loopback:
+        raise RuntimeError(
+            f"HTTP TTS API key environment variable '{api_key_env}' is not set or empty."
+        )
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "voice": voice,
+        "input": spoken_text.strip(),
+        "response_format": response_format,
+    }
+    if instructions and instructions.strip():
+        payload["instructions"] = instructions.strip()
+    if speed is not None:
+        payload["speed"] = float(speed)
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "audio/wav, application/octet-stream",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            audio_bytes = resp.read()
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read(512).decode("utf-8", errors="replace").strip()
+        except Exception:
+            err_body = str(exc.reason)
+        raise RuntimeError(
+            f"HTTP TTS request failed with status {exc.code} from {endpoint}: {err_body}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"HTTP TTS connection failed for {endpoint}: {exc.reason}") from exc
+
+    if not audio_bytes:
+        raise RuntimeError(f"HTTP TTS endpoint {endpoint} returned an empty audio body.")
+
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    if len(audio_bytes) >= 12 and audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        out_wav.write_bytes(audio_bytes)
+        return
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError(
+            f"HTTP TTS endpoint returned non-RIFF audio ({len(audio_bytes)} bytes), "
+            "and `ffmpeg` is not on PATH to transcode it to WAV."
+        )
+
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp_in:
+        tmp_in.write(audio_bytes)
+        tmp_in_path = Path(tmp_in.name)
+    try:
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(tmp_in_path),
+            "-ac",
+            "1",
+            "-sample_fmt",
+            "s16",
+            str(out_wav),
+        ]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode != 0 or not out_wav.exists():
+            err = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"ffmpeg failed decoding HTTP TTS response: {err}")
+    finally:
+        tmp_in_path.unlink(missing_ok=True)
+
+
 def read_pcm16_mono(wav_path: Path, target_rate: int | None = None) -> tuple[array, int]:
     """Reads a WAV file as 16-bit mono PCM samples (`array('h')`) at `target_rate`.
 
@@ -291,6 +415,11 @@ def resolve_and_measure_beats(
     piper_speaker: int | None = None,
     piper_length_scale: float | None = None,
     tts_cmd: str | None = None,
+    http_tts_url: str | None = None,
+    http_tts_key_env: str = DEFAULT_HTTP_TTS_KEY_ENV,
+    http_tts_model: str = DEFAULT_HTTP_TTS_MODEL,
+    http_tts_voice: str = DEFAULT_HTTP_TTS_VOICE,
+    http_tts_instructions: str | None = None,
     force_synth: bool = False,
     target_sample_rate: int | None = None,
 ) -> tuple[list[BeatTiming], list[array], int]:
@@ -300,6 +429,7 @@ def resolve_and_measure_beats(
     inter_gap_s = float(manifest.get("inter_beat_gap_s", DEFAULT_INTER_BEAT_GAP_S))
     default_min_vis = float(manifest.get("min_visual_s", DEFAULT_MIN_VISUAL_S))
     default_post_pad = float(manifest.get("post_pad_s", DEFAULT_POST_PAD_S))
+    manifest_instructions = manifest.get("tts_instructions")
     chosen_rate: int | None = target_sample_rate or (
         int(manifest["sample_rate"]) if "sample_rate" in manifest else None
     )
@@ -341,12 +471,27 @@ def resolve_and_measure_beats(
                     speaker=piper_speaker,
                     length_scale=piper_length_scale,
                 )
+            elif http_tts_url:
+                beat_instructions = (
+                    beat.get("tts_instructions")
+                    or manifest_instructions
+                    or http_tts_instructions
+                )
+                synthesize_with_http_tts(
+                    spoken_text,
+                    wav_path,
+                    url=http_tts_url,
+                    api_key_env=http_tts_key_env,
+                    model=http_tts_model,
+                    voice=http_tts_voice,
+                    instructions=str(beat_instructions) if beat_instructions else None,
+                )
             elif tts_cmd:
                 synthesize_with_template(spoken_text, wav_path, tts_cmd_template=tts_cmd)
             else:
                 raise FileNotFoundError(
                     f"Beat WAV not found at {wav_path}. Pass --piper-bin & --model, "
-                    f"--tts-cmd, or pre-render beat WAVs into --wav-dir."
+                    f"--http-tts-url, --tts-cmd, or pre-render beat WAVs into --wav-dir."
                 )
 
         samples, rate = read_pcm16_mono(wav_path, target_rate=chosen_rate)
@@ -465,12 +610,19 @@ def mux_video_and_audio(
     *,
     required_duration_s: float,
     reencode_video: bool = False,
+    loudnorm_lufs: float | None = None,
 ) -> dict[str, Any]:
     """Muxes video + master WAV into web-ready H.264 (`yuv420p`) + AAC MP4 (`+faststart`).
 
     If `required_duration_s` exceeds the input video's length, extends the final video
     frame seamlessly using `tpad=stop_mode=clone` so trailing speech never clips.
+    Optionally applies EBU R128 loudness normalization (`loudnorm_lufs`, e.g. `-18.0`).
     """
+    if loudnorm_lufs is not None and not (-70.0 <= float(loudnorm_lufs) <= -5.0):
+        raise ValueError(
+            f"--loudnorm-lufs must lie within [-70.0, -5.0] LUFS (e.g. -18.0), got {loudnorm_lufs}."
+        )
+
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
         raise RuntimeError("`ffmpeg` is required for MP4 muxing but was not found on PATH.")
@@ -510,6 +662,16 @@ def mux_video_and_audio(
     else:
         cmd.extend(["-c:v", "copy"])
 
+    if loudnorm_lufs is not None:
+        cmd.extend(
+            [
+                "-af",
+                f"loudnorm=I={float(loudnorm_lufs):.1f}:TP=-1.5:LRA=11",
+                "-ar",
+                "48000",
+            ]
+        )
+
     cmd.extend(
         [
             "-c:a",
@@ -530,6 +692,7 @@ def mux_video_and_audio(
         "input_video_duration_s": round(video_dur_s, 4),
         "cloned_tail_pad_s": round(pad_s if needs_filter_pad else 0.0, 4),
         "reencoded_video": needs_reencode,
+        "loudnorm_lufs": round(float(loudnorm_lufs), 2) if loudnorm_lufs is not None else None,
         "output_mp4": str(output_mp4_path),
     }
 
@@ -549,6 +712,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", type=Path, help="Path to Piper `.onnx` voice model.")
     parser.add_argument("--piper-speaker", type=int, help="Optional speaker ID for multi-speaker Piper models.")
     parser.add_argument("--piper-length-scale", type=float, help="Optional Piper speaking rate length_scale.")
+    parser.add_argument(
+        "--http-tts-url",
+        type=str,
+        help="OpenAI-compatible `/v1/audio/speech` endpoint URL for HTTP neural TTS.",
+    )
+    parser.add_argument(
+        "--http-tts-key-env",
+        type=str,
+        default=DEFAULT_HTTP_TTS_KEY_ENV,
+        help=f"Environment variable holding HTTP TTS Bearer key (default: {DEFAULT_HTTP_TTS_KEY_ENV}).",
+    )
+    parser.add_argument(
+        "--http-tts-model",
+        type=str,
+        default=DEFAULT_HTTP_TTS_MODEL,
+        help=f"HTTP TTS model name (default: {DEFAULT_HTTP_TTS_MODEL}).",
+    )
+    parser.add_argument(
+        "--http-tts-voice",
+        type=str,
+        default=DEFAULT_HTTP_TTS_VOICE,
+        help=f"HTTP TTS voice identifier, e.g. cedar or marin (default: {DEFAULT_HTTP_TTS_VOICE}).",
+    )
+    parser.add_argument(
+        "--http-tts-instructions",
+        type=str,
+        help="Optional natural narrator prosody/style instructions sent to `/v1/audio/speech`.",
+    )
     parser.add_argument(
         "--tts-cmd",
         type=str,
@@ -571,6 +762,11 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_TAIL_PAD_S,
         help=f"Breathing room after final spoken word in seconds (default: {DEFAULT_TAIL_PAD_S}).",
+    )
+    parser.add_argument(
+        "--loudnorm-lufs",
+        type=float,
+        help="Optional EBU R128 integrated loudness target in LUFS (e.g. -18.0) during MP4 muxing.",
     )
     parser.add_argument(
         "--reencode-video",
@@ -601,6 +797,11 @@ def main(argv: list[str] | None = None) -> int:
             piper_speaker=args.piper_speaker,
             piper_length_scale=args.piper_length_scale,
             tts_cmd=args.tts_cmd,
+            http_tts_url=args.http_tts_url,
+            http_tts_key_env=args.http_tts_key_env,
+            http_tts_model=args.http_tts_model,
+            http_tts_voice=args.http_tts_voice,
+            http_tts_instructions=args.http_tts_instructions,
             force_synth=args.force_synth,
             target_sample_rate=args.sample_rate,
         )
@@ -641,6 +842,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.output,
                     required_duration_s=target_track_s,
                     reencode_video=args.reencode_video,
+                    loudnorm_lufs=args.loudnorm_lufs,
                 )
                 print(
                     f"Muxed narrated MP4 -> {mux_summary['output_mp4']} "
