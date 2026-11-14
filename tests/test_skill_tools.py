@@ -394,6 +394,55 @@ def test_lint_shipped_html_player_template() -> None:
     assert lint.lint_html(template_path) == []
     assert lint.main([str(template_path)]) == 0
 
+    # Explicitly verify Bespoke Nord Cinema Player invariants
+    parser = lint._PlayerHTMLParser()
+    parser.feed(template_path.read_text(encoding="utf-8"))
+    assert parser.video_count >= 1
+    assert parser.video_with_native_controls == 0
+    assert parser.symbol_or_use_count == 0
+    assert len(parser.button_svg_counts) > 0
+    assert all(c <= 1 for c in parser.button_svg_counts)
+
+
+def test_lint_catches_multi_svg_buttons_and_icon_sprites(tmp_path: Path) -> None:
+    csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; media-src \'self\';">'
+
+    multi_svg_html = tmp_path / "multi_svg_btn.html"
+    multi_svg_html.write_text(
+        f"<!doctype html><html><head>{csp}</head><body>"
+        '<video id="cinemaVideo"></video>'
+        '<button type="button">'
+        '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>'
+        '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14z"/></svg>'
+        "</button>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    errs = lint.lint_html(multi_svg_html)
+    assert any("strictly <= 1 permitted" in e for e in errs)
+
+    symbol_sprite_html = tmp_path / "symbol_sprite.html"
+    symbol_sprite_html.write_text(
+        f"<!doctype html><html><head>{csp}</head><body>"
+        '<video id="cinemaVideo"></video>'
+        '<svg><symbol id="ic-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol></svg>'
+        '<button type="button"><svg><use href="#ic-play"></use></svg></button>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    errs2 = lint.lint_html(symbol_sprite_html)
+    assert any("<symbol>/<use> icon sprites are forbidden" in e for e in errs2)
+
+    native_controls_html = tmp_path / "native_controls.html"
+    native_controls_html.write_text(
+        f"<!doctype html><html><head>{csp}</head><body>"
+        '<video id="cinemaVideo" controls></video>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    errs3 = lint.lint_html(native_controls_html)
+    assert any("Native <video controls> is forbidden" in e for e in errs3)
+
 
 def test_lint_catches_bad_mp4_pix_fmt_and_missing_audio(tmp_path: Path) -> None:
     bad_mp4 = tmp_path / "wrong_fmt.mp4"

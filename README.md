@@ -42,7 +42,7 @@ It solves four recurring failure modes in agent-generated technical animations: 
 
 ## Useful Context
 
-- Keep `assets/video_player_template.html` 100% self-contained (inline CSS, inline monochrome `<symbol>` SVGs, inline script, strict offline CSP) so `lint.py` passes without modification when copied into output bundles.
+- Keep `assets/video_player_template.html` 100% self-contained (inline CSS, standalone inline monochrome SVGs without `<symbol>`/`<use>` sprites, `<= 1` SVG per button, inline script, strict offline CSP) so `lint.py` passes without modification when copied into output bundles.
 - When serving generated HTML5 players locally, prefer HTTP `206` Range-capable static servers so browser `<video>` scrubbing and `<track>` subtitle loading work reliably.
 
 ## Attribution and License

@@ -11,7 +11,7 @@ Author crisp, deterministic `1920x1080 @ 60fps` technical explainer videos and a
 Pair animations optionally with sample-accurate neural voiceover (offline Piper ONNX, any OpenAI-compatible `/v1/audio/speech` HTTP endpoint, or custom CLI TTS), EBU R128 loudness normalization, synchronized `.vtt` WebVTT subtitles, and a zero-CDN offline HTML5 chapter player.
 
 - `assets/nord_manim_theme.py`: Nord Polar/Frost/Aurora palette tokens, safe-frame layout constants, `BeatTimer` synchronization helper, LaTeX-free primitives (`make_header_banner`, `make_node_card`, `make_badge`, `animate_blocked_pulse`, `safe_fit_text`), and strict port-anchored orthogonal schematic connectors (`connect_h`, `connect_v`, `connect_elbow`, `animate_packet_along`, `assert_all_orthogonal`).
-- `assets/video_player_template.html`: Standalone, zero-CDN Nord dark/light HTML5 Cinema Player with chapter tabs, clickable beat markers, playback rate (`0.75x..2.0x`), and optional bilingual audio/caption switching.
+- `assets/video_player_template.html`: Standalone, zero-CDN Nord + Frozen-Glass Custom HTML5 Cinema Player with segmented beat scrubber, custom transport deck, in-canvas WebVTT subtitle HUD, right-hand Beat Rail with intra-beat progress bars, and state-driven single-SVG icons.
 - `check_scene_bounds.py`: Pre-render layout verifier that checks Manim scenes or JSON checkpoints for `[-6.8, 6.8] x [-3.75, 3.75]` frame overflow and sibling text-label collisions.
 - `mux_narration.py`: Stdlib Python CLI that synthesizes per-beat WAVs via Piper, an OpenAI-compatible HTTP `/v1/audio/speech` endpoint, or a custom TTS command, emits `beat_timings.json`, assembles a sample-accurate master WAV track, clone-pads trailing video frames (`tpad=stop_mode=clone`) so speech never clips, optionally normalizes loudness (`--loudnorm-lufs -18.0`), muxes H.264 + AAC (`+faststart`), and writes `.vtt` captions.
 - `lint.py`: Output bundle verifier checking `ffprobe` H.264 `yuv420p` + audio streams, WebVTT header/cue monotonicity, and offline HTML5 player CSP/zero-CDN/zero-emoji invariants.
@@ -248,9 +248,18 @@ ffmpeg -y -f concat -safe 0 -i output/concat.txt \
 
 When delivering a multi-chapter walkthrough or bilingual explainer package:
 1. Copy `assets/video_player_template.html` to `output/index.html`.
-2. Customize `PLAYER_CONFIG` (`chapters`, `sources`, and `markers` matching beat timestamps from `beat_timings.json`). If delivering a single language, hide or omit the secondary language button in `#langGroup`.
-3. Keep all styles, monochrome SVG icons, and scripts 100% inline so the bundle works offline without external CDNs.
-4. **HTTP `206 Partial Content` Serving Note**: Browsers require HTTP Byte-Range (`206`) responses to scrub `<video>` timelines and load `<track>` `.vtt` files cleanly (`file://` blocks WebVTT tracks via CORS, and Python's basic `http.server` lacks `Range` header support in older versions). Serve local previews with a Range-capable static server such as `npx serve output` or nginx/Caddy.
+2. Customize `PLAYER_CONFIG` (`chapters`, `sources`, and `markers` matching beat timestamps from `beat_timings.json`). If delivering a single language, hide or omit the secondary language option in `#audioLangBtn`.
+3. **Nord + Frozen-Glass Custom Cinema Player Architecture**:
+   - Replaces native `<video controls>` with a bespoke frosted-glass player (`<video id="cinemaVideo" playsinline preload="metadata">` without the `controls` attribute; fullscreen triggers on outer `cinemaStage.requestFullscreen()` so custom controls remain accessible in fullscreen).
+   - Features center frozen-glass `#bigPlayBtn`, transient `#gestureToast`, `#bufferSpinner`, and floating in-canvas `#subtitleHud` reading WebVTT `<track>` cues (auto-lifting above the deck when controls are active and smoothly settling down after `2.6s` idle).
+   - Includes a segmented beat-aware scrubber (`#scrubberWrap` with `#bufferFill`, `#hoverFill`, `#progressFill`, `.scrubber-beat-tick` dividers, glowing thumb, and hover preview tooltip `01:24 · Beat Title`).
+   - Includes a full transport and settings deck (`Play/Pause`, `-10s/+10s`, `Prev/Next Beat`, `Mute` + `#volumeSlider`, in-player `EN | Secondary` audio switch, `CC`, compact Speed Popover `0.75x..2x`, `Theater Mode`, `PiP`, `Download MP4`, Shortcuts `?` popover, `Fullscreen`) and a right-hand Beat Rail with intra-beat `.step-progress-bar`.
+4. **State-Driven Single-SVG Icon Rule**:
+   - Zero `<symbol>` / `<use>` icon sprites allowed.
+   - Strictly `<= 1` `<svg viewBox="0 0 24 24"><path d="..."/></svg>` inside any `<button>`.
+   - Swap icon states dynamically via `ICON_PATHS` + `setBtnIcon(btn, stateKey)` (e.g. `play`/`pause`, `volHigh`/`volLow`/`volMute`, `fsEnter`/`fsExit`, `sun`/`moon`), with `[hidden] { display: none !important; }`.
+5. Keep all styles, monochrome SVG icons, and scripts 100% inline so the bundle works offline without external CDNs.
+6. **HTTP `206 Partial Content` Serving Note**: Browsers require HTTP Byte-Range (`206`) responses to scrub `<video>` timelines and load `<track>` `.vtt` files cleanly (`file://` blocks WebVTT tracks via CORS, and Python's basic `http.server` lacks `Range` header support in older versions). Serve local previews with a Range-capable static server such as `npx serve output` or nginx/Caddy.
 
 ### Mandatory Bundle Verification (`lint.py`)
 

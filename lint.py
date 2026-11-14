@@ -229,7 +229,7 @@ def lint_vtt(vtt_path: Path) -> list[str]:
 
 
 class _PlayerHTMLParser(HTMLParser):
-    """Extracts CSP meta tags, external asset URLs, style blocks, and video tags."""
+    """Extracts CSP meta tags, external asset URLs, style blocks, video tags, and icon invariants."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -238,6 +238,11 @@ class _PlayerHTMLParser(HTMLParser):
         self.style_blocks: list[str] = []
         self.in_style = False
         self.video_count = 0
+        self.video_with_native_controls = 0
+        self.symbol_or_use_count = 0
+        self.button_svg_counts: list[int] = []
+        self.in_button = False
+        self.current_button_svg_count = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         t = tag.lower()
@@ -248,6 +253,18 @@ class _PlayerHTMLParser(HTMLParser):
 
         if t == "video":
             self.video_count += 1
+            if "controls" in attr_map:
+                self.video_with_native_controls += 1
+
+        if t in {"symbol", "use"}:
+            self.symbol_or_use_count += 1
+
+        if t == "button":
+            self.in_button = True
+            self.current_button_svg_count = 0
+
+        if t == "svg" and self.in_button:
+            self.current_button_svg_count += 1
 
         if t == "style":
             self.in_style = True
@@ -267,8 +284,13 @@ class _PlayerHTMLParser(HTMLParser):
                     self.external_refs.append(f"<{t} {attr_name}=\"{val}\">")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "style":
+        t = tag.lower()
+        if t == "style":
             self.in_style = False
+        if t == "button":
+            if self.in_button:
+                self.button_svg_counts.append(self.current_button_svg_count)
+                self.in_button = False
 
     def handle_data(self, data: str) -> None:
         if self.in_style:
@@ -304,6 +326,24 @@ def lint_html(html_path: Path) -> list[str]:
 
     if parser.video_count == 0:
         errors.append(f"{label}: HTML player must contain at least one <video> element.")
+
+    if parser.video_with_native_controls > 0:
+        errors.append(
+            f"{label}: Native <video controls> is forbidden; use bespoke cinema player with custom transport deck."
+        )
+
+    if parser.symbol_or_use_count > 0:
+        errors.append(
+            f"{label}: SVG <symbol>/<use> icon sprites are forbidden ({parser.symbol_or_use_count} found); "
+            "use standalone inline <svg viewBox=\"0 0 24 24\"><path d=\"...\"/></svg> elements."
+        )
+
+    for idx, count in enumerate(parser.button_svg_counts, start=1):
+        if count > 1:
+            errors.append(
+                f"{label}: Button #{idx} contains {count} <svg> elements (strictly <= 1 permitted). "
+                "Swap <path d=\"...\"/> dynamically via state instead of stacking multiple icons."
+            )
 
     return errors
 
